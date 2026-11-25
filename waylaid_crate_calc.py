@@ -7,8 +7,8 @@ Pricing data from TradeSkillMaster (https://tradeskillmaster.com) - public CSVs,
 no API key needed: https://tradeskillmaster.com/public-data
 
 Usage:
-    python3 waylaid_crate_calc.py                    # EU Normal Horde, market value
-    python3 waylaid_crate_calc.py --price min        # use min buyout instead
+    python3 waylaid_crate_calc.py                    # EU Normal Horde, min buyout
+    python3 waylaid_crate_calc.py --price market     # use market value instead
     python3 waylaid_crate_calc.py --faction alliance --type pvp
     python3 waylaid_crate_calc.py --file items.csv   # use a downloaded CSV
     python3 waylaid_crate_calc.py --crate-ids crates.json
@@ -225,8 +225,8 @@ def main():
     ap.add_argument("--type", default="normal",
                     choices=["normal", "pvp", "roleplay", "roleplay-pvp"])
     ap.add_argument("--faction", default="horde", choices=["horde", "alliance"])
-    ap.add_argument("--price", default="market", choices=["market", "min"],
-                    help="which price to RANK by: market value (default) or min buyout; both are shown")
+    ap.add_argument("--price", default="min", choices=["market", "min"],
+                    help="which price to RANK by: min buyout (default) or market value; both are shown")
     ap.add_argument("--file", help="use a local items.csv instead of downloading")
     ap.add_argument("--crate-ids", help="JSON file: {\"Apprentice Fabrics\": 12345, ...}")
     ap.add_argument("--rank", default="auto", choices=["auto", "fill", "buy"],

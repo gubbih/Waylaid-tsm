@@ -88,7 +88,7 @@ async def crates(interaction: discord.Interaction,
     region_v = region.value if region else "eu"
     type_v = game_type.value if game_type else "normal"
     faction_v = faction.value if faction else "horde"
-    basis = "n" if (price and price.value == "min") else "m"
+    basis = "m" if (price and price.value == "market") else "n"
     try:
         pm, pn, names = await get_prices(region_v, type_v, faction_v)
     except Exception as e:  # noqa: BLE001
@@ -138,7 +138,7 @@ async def mats(interaction: discord.Interaction,
     region_v = region.value if region else "eu"
     type_v = game_type.value if game_type else "normal"
     faction_v = faction.value if faction else "horde"
-    basis = "n" if (price and price.value == "min") else "m"
+    basis = "m" if (price and price.value == "market") else "n"
     try:
         pm, pn, _ = await get_prices(region_v, type_v, faction_v)
     except Exception as e:  # noqa: BLE001

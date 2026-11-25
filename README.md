@@ -26,7 +26,7 @@ Both TSM prices are shown side by side:
  
 - **MV** = market value (TSM's typical selling price, steadier).
 - **MB** = min buyout (cheapest current listing, closer to what you'd pay right now).
-The list is ranked by one of them (market value by default). Items with no listing show `n/a`.
+The list is ranked by one of them (minimum buyout by default). Items with no listing show `n/a`.
 Auction house cut and deposit are **not** included.
  
 ## Command-line script
@@ -34,8 +34,8 @@ Auction house cut and deposit are **not** included.
 Requires Python 3.8+ and nothing else (standard library only).
  
 ```
-python3 waylaid_crate_calc.py                      # EU Normal Horde, ranked by market value
-python3 waylaid_crate_calc.py --price min          # rank by min buyout instead
+python3 waylaid_crate_calc.py                      # EU Normal Horde, ranked by min buyout
+python3 waylaid_crate_calc.py --price market       # rank by market value instead
 python3 waylaid_crate_calc.py --rank fill          # rank by fill cost only (you own the crates)
 python3 waylaid_crate_calc.py --rank buy           # rank by crate price + fill
 python3 waylaid_crate_calc.py --top 5              # only the 5 cheapest
@@ -51,7 +51,7 @@ Options:
 | `--region` | `eu`, `us` | `eu` |
 | `--type` | `normal`, `pvp`, `roleplay`, `roleplay-pvp` | `normal` |
 | `--faction` | `horde`, `alliance` | `horde` |
-| `--price` | `market`, `min` (which price to rank by) | `market` |
+| `--price` | `market`, `min` (which price to rank by) | `min` |
 | `--rank` | `auto`, `buy`, `fill` | `auto` (buy + fill when crate prices exist) |
 | `--top N` | number of crates to show | all |
 | `--file` | path to a local `items.csv` | download from TSM |
@@ -75,7 +75,7 @@ No privileged intents are required.
 ### 2. Run it
  
 ```
-pip install -r requirements.txt
+python3 -m pip install -U discord.py
 export DISCORD_TOKEN="your-token"        # Windows (cmd): set DISCORD_TOKEN=your-token
 python3 waylaid_bot.py
 ```
@@ -85,10 +85,35 @@ Slash commands can take a few minutes to appear the first time.
 ### 3. Commands
  
 - `/crates [region] [game_type] [faction] [rank] [price] [top]` : cheapest Merchant's Favor
-  from crates. Default: EU, Normal, Horde, top 10.
+  from crates. Default: EU, Normal, Horde, minimum buyout, top 10.
 - `/mats [region] [game_type] [faction] [price] [top]` : cheapest raw materials per unit.
 TSM data is cached for 30 minutes (TSM only refreshes every few hours).
  
+### Using the bot while it is active
+
+Choose `/crates` or `/mats` in Discord, then provide any options you want. Discord will
+show the available choices, and the bot will usually respond within a few seconds.
+
+Examples:
+
+- `/crates` - show the 10 cheapest crates for EU Normal Horde.
+- `/crates region:US faction:Alliance top:5` - show the 5 cheapest US Alliance crates.
+- `/crates rank:Fill cost per Favor (own the crate) price:Min buyout` - rank
+  crates you already own by their fill cost per Favor.
+- `/mats region:EU faction:Horde top:15` - show 15 useful materials ranked by
+  the default minimum buyout.
+
+For `/crates` results:
+
+- `buy+fill/Favor` includes the crate price and the material fill cost.
+- `fill/Favor` includes only the fill cost, for crates already in your inventory.
+- `MV` is market value and `MB` is minimum buyout.
+- `n/a` means that TSM has no usable price for the item.
+- `*` marks an Artisan Favor value that is expected but not confirmed.
+
+The bot is active only while `waylaid_bot.py` is running. When it is offline,
+slash commands cannot execute. To stop a local bot, press `Ctrl+C`.
+
 ### Giving the bot its token
  
 Either set an environment variable named `DISCORD_TOKEN` (preferred), or, if your host has
@@ -136,4 +161,3 @@ confirmed yet.
  
 Pricing data from [TradeSkillMaster](https://tradeskillmaster.com).
 Not affiliated with Blizzard Entertainment or TradeSkillMaster.
- 
