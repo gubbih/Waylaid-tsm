@@ -32,6 +32,27 @@ CACHE_SECONDS = 30 * 60          # TSM only refreshes every few hours
 _cache = {}                      # url -> (timestamp, market, minbuyout, names)
 
 
+def _result_embeds(title, entries, footer):
+    """Build readable, paginated embeds from result entries."""
+    page_size = 10
+    pages = [entries[i:i + page_size] for i in range(0, len(entries), page_size)]
+    if not pages:
+        pages = [["No matching results found."]]
+
+    embeds = []
+    for page_number, page in enumerate(pages, 1):
+        page_title = title
+        if len(pages) > 1:
+            page_title += f" · {page_number}/{len(pages)}"
+        embed = discord.Embed(
+            title=page_title,
+            description="\n\n".join(page),
+            colour=discord.Colour.gold())
+        embed.set_footer(text=footer)
+        embeds.append(embed)
+    return embeds
+
+
 def _download(url):
     req = urllib.request.Request(url, headers={"User-Agent": "waylaid-bot/1.0"})
     with urllib.request.urlopen(req, timeout=30) as r:
@@ -103,27 +124,27 @@ async def crates(interaction: discord.Interaction,
         rank_v = "buy" if any(r["crate"][basis] is not None for r in rows) else "fill"
     rows = sort_rows(rows, basis, rank_v)[:top]
 
-    lines = []
+    entries = []
     for i, r in enumerate(rows, 1):
         favor = f"{r['favor']}{'*' if r['expected'] else ''}"
         lab = "buy+fill" if rank_v == "buy" else "fill"
-        lines.append(
-            f"{i:>2}. {r['name']} ({favor} Favor)\n"
-            f"    {lab}/Favor  MV {fmt(metric(r, 'm', rank_v))} | MB {fmt(metric(r, 'n', rank_v))}\n"
-            f"    crate       MV {fmt(r['crate']['m'])} | MB {fmt(r['crate']['n'])}\n"
-            f"    fill        MV {fmt(r['fill']['m'])} | MB {fmt(r['fill']['n'])}  "
-            f"({bundle_label(r['bundle'][basis])})")
+        entries.append(
+            f"**{i}. {r['name']}** · {favor} Favor\n"
+            f"> **{lab} / Favor** — MV {fmt(metric(r, 'm', rank_v))} · "
+            f"MB {fmt(metric(r, 'n', rank_v))}\n"
+            f"> **Crate** — MV {fmt(r['crate']['m'])} · MB {fmt(r['crate']['n'])}\n"
+            f"> **Fill** — MV {fmt(r['fill']['m'])} · MB {fmt(r['fill']['n'])}\n"
+            f"> **Materials** — {bundle_label(r['bundle'][basis])}")
 
     base_label = "min buyout" if basis == "n" else "market value"
     title = (f"Waylaid Crates - {region_v.upper()} {type_v} {faction_v.capitalize()} "
              f"(by {'buy + fill' if rank_v == 'buy' else 'fill only'}, {base_label})")
-    desc = "```\n" + "\n".join(lines) + "\n```"
-    if len(desc) > 4000:   # Discord embed description limit is 4096
-        desc = desc[:3990] + "\n...```"
-    embed = discord.Embed(title=title[:256], description=desc, colour=discord.Colour.gold())
-    embed.set_footer(text="MV = market value, MB = min buyout | * Artisan Favor unconfirmed | "
-                          "Data: TradeSkillMaster (tradeskillmaster.com)")
-    await interaction.followup.send(embed=embed)
+    embeds = _result_embeds(
+        title,
+        entries,
+        "MV = market value · MB = min buyout · * Artisan Favor unconfirmed · "
+        "Data: TradeSkillMaster")
+    await interaction.followup.send(embeds=embeds)
 
 
 @bot.tree.command(name="mats", description="Cheapest Waylaid Crate materials (per unit)")
@@ -148,14 +169,19 @@ async def mats(interaction: discord.Interaction,
     ref = pn if basis == "n" else pm
     mat_ids = {i for _, _, bs in CRATES.values() for b in bs for i, _ in b}
     ranked = sorted((i for i in mat_ids if i in ref), key=lambda i: ref[i])[:top]
-    lines = [f"{'':<24} {'MV':>11} {'MB':>11}"]
-    lines += [f"{ITEMS.get(i, i):<24} {fmt(pm.get(i)):>11} {fmt(pn.get(i)):>11}" for i in ranked]
-    embed = discord.Embed(
-        title=f"Cheapest mats - {region_v.upper()} {type_v} {faction_v.capitalize()} "
-              f"(by {'min buyout' if basis == 'n' else 'market value'})",
-        description="```\n" + "\n".join(lines) + "\n```", colour=discord.Colour.gold())
-    embed.set_footer(text="MV = market value, MB = min buyout | Data: TradeSkillMaster")
-    await interaction.followup.send(embed=embed)
+    entries = [
+        f"**{i}. {ITEMS.get(item_id, item_id)}**\n"
+        f"> **Market value** — {fmt(pm.get(item_id))}\n"
+        f"> **Min buyout** — {fmt(pn.get(item_id))}"
+        for i, item_id in enumerate(ranked, 1)
+    ]
+    title = (f"Cheapest Materials - {region_v.upper()} {type_v} {faction_v.capitalize()} "
+             f"(by {'min buyout' if basis == 'n' else 'market value'})")
+    embeds = _result_embeds(
+        title,
+        entries,
+        "Prices from TradeSkillMaster · Sorted by selected price")
+    await interaction.followup.send(embeds=embeds)
 
 
 if __name__ == "__main__":
