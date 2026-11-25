@@ -130,7 +130,7 @@ def find_col(header, names, fallback):
     return fallback
 
 
-def parse_prices(text, which):
+def parse_prices(text, which, quiet=False):
     reader = csv.reader(io.StringIO(text))
     header = next(reader)
     id_col = find_col(header, ["itemid", "item_id", "id"], 0)
@@ -142,8 +142,9 @@ def parse_prices(text, which):
     n_col = find_col(header, ["numauctions", "num_auctions", "quantity"], None)
     name_col = find_col(header, ["name", "itemname"], None)
 
-    print(f"CSV columns: {header}  -> using '{header[p_col]}' for prices",
-          file=sys.stderr)
+    if not quiet:
+        print(f"CSV columns: {header}  -> using '{header[p_col]}' for {which}",
+              file=sys.stderr)
 
     prices, listed, names = {}, {}, {}
     for row in reader:
@@ -177,6 +178,46 @@ def bundle_label(bundle):
     return " + ".join(f"{q}x {ITEMS.get(i, i)}" for i, q in bundle)
 
 
+def build_rows(pm, pn, names, crate_ids=None):
+    """pm = market-value prices, pn = min-buyout prices. Returns one dict per crate
+    with market ('m') and min-buyout ('n') figures side by side."""
+    crate_ids = crate_ids or {}
+    rows = []
+    for name, (favor, expected, bundles) in CRATES.items():
+        cid = crate_ids.get(name) or names.get(f"waylaid crate: {name}".lower())
+        r = {"name": name, "favor": favor, "expected": expected,
+             "fill": {}, "bundle": {}, "crate": {}}
+        for kind, prices in (("m", pm), ("n", pn)):
+            best = None
+            for b in bundles:
+                c = bundle_cost(b, prices)
+                if c is not None and (best is None or c < best[0]):
+                    best = (c, b)
+            r["fill"][kind] = best[0] if best else None
+            r["bundle"][kind] = best[1] if best else bundles[0]
+            r["crate"][kind] = prices.get(cid) if cid else None
+        rows.append(r)
+    return rows
+
+
+def metric(r, kind, rank):
+    """Cost per Favor (copper) for one price kind, or None if data is missing."""
+    fill, crate = r["fill"][kind], r["crate"][kind]
+    if fill is None:
+        return None
+    if rank == "buy":
+        return None if crate is None else (fill + crate) / r["favor"]
+    return fill / r["favor"]
+
+
+def sort_rows(rows, basis, rank):
+    """Cheapest first on the chosen price basis; rows missing data go last."""
+    def key(r):
+        v = metric(r, basis, rank)
+        return (v is None, v if v is not None else 0)
+    return sorted(rows, key=key)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -185,7 +226,7 @@ def main():
                     choices=["normal", "pvp", "roleplay", "roleplay-pvp"])
     ap.add_argument("--faction", default="horde", choices=["horde", "alliance"])
     ap.add_argument("--price", default="market", choices=["market", "min"],
-                    help="market = TSM market value (default), min = min buyout")
+                    help="which price to RANK by: market value (default) or min buyout; both are shown")
     ap.add_argument("--file", help="use a local items.csv instead of downloading")
     ap.add_argument("--crate-ids", help="JSON file: {\"Apprentice Fabrics\": 12345, ...}")
     ap.add_argument("--rank", default="auto", choices=["auto", "fill", "buy"],
@@ -201,76 +242,49 @@ def main():
             crate_ids.update(json.load(f))
 
     text = load_csv_text(args)
-    prices, listed, names = parse_prices(text, args.price)
-    label = "market value" if args.price == "market" else "min buyout"
+    pm, listed, names = parse_prices(text, "market")
+    pn, _, _ = parse_prices(text, "min", quiet=True)
+    basis = "m" if args.price == "market" else "n"
+    basis_label = "market value" if basis == "m" else "min buyout"
 
-    # ---- crates ranked by fill cost per Favor ----
-    rows = []
-    for name, (favor, expected, bundles) in CRATES.items():
-        best = None
-        for b in bundles:
-            c = bundle_cost(b, prices)
-            if c is not None and (best is None or c < best[0]):
-                best = (c, b)
-        cid = crate_ids.get(name) or names.get(f"waylaid crate: {name}".lower())
-        crate_price = prices.get(cid) if cid else None
-        rows.append({
-            "name": name, "favor": favor, "expected": expected,
-            "fill": best[0] if best else None,
-            "bundle": best[1] if best else bundles[0],
-            "crate": crate_price,
-        })
+    rows = build_rows(pm, pn, names, crate_ids)
+    rows = [r for r in rows if r["fill"]["m"] is not None or r["fill"]["n"] is not None]
 
-    have = [r for r in rows if r["fill"] is not None]
     rank = args.rank
     if rank == "auto":
-        rank = "buy" if any(r["crate"] is not None for r in have) else "fill"
-    if rank == "buy":
-        # crates without a TSM price go to the bottom, ordered by fill cost
-        priced = sorted((r for r in have if r["crate"] is not None),
-                        key=lambda r: (r["fill"] + r["crate"]) / r["favor"])
-        unpriced = sorted((r for r in have if r["crate"] is None),
-                          key=lambda r: r["fill"] / r["favor"])
-        have = priced + unpriced
-    else:
-        have.sort(key=lambda r: r["fill"] / r["favor"])
-    missing = [r for r in rows if r["fill"] is None]
+        rank = "buy" if any(r["crate"][basis] is not None for r in rows) else "fill"
+    rows = sort_rows(rows, basis, rank)
     if args.top:
-        have = have[: args.top]
+        rows = rows[: args.top]
 
-    print(f"\nWoW Forever | {args.region.upper()} {args.type} {args.faction.capitalize()} "
-          f"| TSM {label}\n")
-    print("WAYLAID CRATES - ranked by " + (
-        "BUY + FILL per Favor (crate bought on the AH, then filled)" if rank == "buy"
-        else "FILL cost per Favor (crate already owned)"))
-    print("-" * 120)
-    print(f"{'#':>2}  {'Crate':<25} {'Favor':>6}  {'Per Favor':>11}  {'Fill cost':>12}  "
-          f"{'Crate AH':>11}  {'Buy+fill/Favor':>14}  {'Buy+fill total':>14}  Bundle")
-    for i, r in enumerate(have, 1):
-        per = r["fill"] / r["favor"]
+    what = "BUY + FILL" if rank == "buy" else "FILL"
+    print(f"\nWoW Forever | {args.region.upper()} {args.type} {args.faction.capitalize()}")
+    print(f"WAYLAID CRATES - ranked by {what} cost per Favor, using {basis_label} "
+          f"(MV = market value, MB = min buyout)")
+    print("-" * 150)
+    lab = "Buy+fill" if rank == "buy" else "Fill"
+    print(f"{'#':>2}  {'Crate':<25} {'Favor':>5}  {'Crate MV':>10} {'Crate MB':>10}  "
+          f"{'Fill MV':>10} {'Fill MB':>10}  {lab + '/Fv MV':>14} {lab + '/Fv MB':>14}  Bundle")
+    for i, r in enumerate(rows, 1):
         favor = f"{r['favor']}{'*' if r['expected'] else ''}"
-        if r["crate"] is not None:
-            bf = fmt((r["fill"] + r["crate"]) / r["favor"])
-            cr = fmt(r["crate"])
-            bt = fmt(r["fill"] + r["crate"])
-        else:
-            bf, cr, bt = "-", "-", "-"
-        print(f"{i:>2}  {r['name']:<25} {favor:>6}  {fmt(per):>11}  {fmt(r['fill']):>12}  "
-              f"{cr:>11}  {bf:>14}  {bt:>14}  {bundle_label(r['bundle'])}")
+        print(f"{i:>2}  {r['name']:<25} {favor:>5}  "
+              f"{fmt(r['crate']['m']):>10} {fmt(r['crate']['n']):>10}  "
+              f"{fmt(r['fill']['m']):>10} {fmt(r['fill']['n']):>10}  "
+              f"{fmt(metric(r, 'm', rank)):>14} {fmt(metric(r, 'n', rank)):>14}  "
+              f"{bundle_label(r['bundle'][basis])}")
     print("\n* Artisan Favor is expected, not confirmed by players yet.")
-    if not any(r["crate"] for r in rows):
-        print("(No crate prices found in the TSM data - crates may not be on the AH or be named differently.)")
-    if missing:
-        print("\nNo TSM price data for: " + ", ".join(r["name"] for r in missing))
+    print("n/a = no TSM data (e.g. nothing listed for min buyout).")
 
     # ---- cheapest individual mats ----
     mat_ids = {i for _, _, bs in CRATES.values() for b in bs for i, _ in b}
-    mats = sorted((prices[i], i) for i in mat_ids if i in prices)
-    print("\nCHEAPEST MATS (per unit)")
-    print("-" * 60)
-    for p, i in mats:
+    ref = pm if basis == "m" else pn
+    mats = sorted(mat_ids, key=lambda i: (i not in ref, ref.get(i, 0)))
+    print(f"\nCHEAPEST MATS (per unit, sorted by {basis_label})")
+    print("-" * 70)
+    print(f"  {'':<26} {'MV':>12} {'MB':>12}")
+    for i in mats:
         extra = f"  ({listed[i]} listed)" if i in listed else ""
-        print(f"  {ITEMS.get(i, i):<26} {fmt(p):>12}{extra}")
+        print(f"  {ITEMS.get(i, i):<26} {fmt(pm.get(i)):>12} {fmt(pn.get(i)):>12}{extra}")
 
     print("\nPricing data from TradeSkillMaster - https://tradeskillmaster.com")
     print("Auction house cut and deposit are not included.\n")

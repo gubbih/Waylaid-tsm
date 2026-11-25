@@ -25,10 +25,11 @@ import urllib.request
 import discord
 from discord import app_commands
 
-from waylaid_crate_calc import BASE, CRATES, ITEMS, bundle_cost, bundle_label, fmt, parse_prices
+from waylaid_crate_calc import (BASE, CRATES, ITEMS, build_rows, bundle_label, fmt,
+                                metric, parse_prices, sort_rows)
 
 CACHE_SECONDS = 30 * 60          # TSM only refreshes every few hours
-_cache = {}                      # url+price -> (timestamp, prices, names)
+_cache = {}                      # url -> (timestamp, market, minbuyout, names)
 
 
 def _download(url):
@@ -37,33 +38,17 @@ def _download(url):
         return r.read().decode("utf-8")
 
 
-async def get_prices(region, gtype, faction, price_kind):
+async def get_prices(region, gtype, faction):
+    """Returns (market_prices, minbuyout_prices, names). Cached for CACHE_SECONDS."""
     url = f"{BASE}/forever/{region}/realm/{gtype}-{faction}/items.csv"
-    key = (url, price_kind)
-    hit = _cache.get(key)
+    hit = _cache.get(url)
     if hit and time.time() - hit[0] < CACHE_SECONDS:
-        return hit[1], hit[2]
+        return hit[1], hit[2], hit[3]
     text = await asyncio.to_thread(_download, url)
-    prices, _listed, names = parse_prices(text, price_kind)
-    _cache[key] = (time.time(), prices, names)
-    return prices, names
-
-
-def build_rows(prices, names):
-    rows = []
-    for name, (favor, expected, bundles) in CRATES.items():
-        best = None
-        for b in bundles:
-            c = bundle_cost(b, prices)
-            if c is not None and (best is None or c < best[0]):
-                best = (c, b)
-        if best is None:
-            continue
-        cid = names.get(f"waylaid crate: {name}".lower())
-        rows.append({"name": name, "favor": favor, "expected": expected,
-                     "fill": best[0], "bundle": best[1],
-                     "crate": prices.get(cid) if cid else None})
-    return rows
+    pm, _l, names = parse_prices(text, "market", quiet=True)
+    pn, _l2, _n = parse_prices(text, "min", quiet=True)
+    _cache[url] = (time.time(), pm, pn, names)
+    return pm, pn, names
 
 
 # ---------------------------------------------------------------- bot
@@ -103,43 +88,40 @@ async def crates(interaction: discord.Interaction,
     region_v = region.value if region else "eu"
     type_v = game_type.value if game_type else "normal"
     faction_v = faction.value if faction else "horde"
-    price_v = price.value if price else "market"
+    basis = "n" if (price and price.value == "min") else "m"
     try:
-        prices, names = await get_prices(region_v, type_v, faction_v, price_v)
+        pm, pn, names = await get_prices(region_v, type_v, faction_v)
     except Exception as e:  # noqa: BLE001
         await interaction.followup.send(f"Couldn't fetch TSM data: `{e}`")
         return
 
-    rows = build_rows(prices, names)
-    rank_v = rank.value if rank else ("buy" if any(r["crate"] for r in rows) else "fill")
-    if rank_v == "buy":
-        priced = sorted((r for r in rows if r["crate"] is not None),
-                        key=lambda r: (r["fill"] + r["crate"]) / r["favor"])
-        unpriced = sorted((r for r in rows if r["crate"] is None),
-                          key=lambda r: r["fill"] / r["favor"])
-        rows = priced + unpriced
+    rows = build_rows(pm, pn, names)
+    rows = [r for r in rows if r["fill"]["m"] is not None or r["fill"]["n"] is not None]
+    if rank:
+        rank_v = rank.value
     else:
-        rows.sort(key=lambda r: r["fill"] / r["favor"])
-    rows = rows[:top]
+        rank_v = "buy" if any(r["crate"][basis] is not None for r in rows) else "fill"
+    rows = sort_rows(rows, basis, rank_v)[:top]
 
     lines = []
     for i, r in enumerate(rows, 1):
         favor = f"{r['favor']}{'*' if r['expected'] else ''}"
-        if r["crate"] is not None:
-            bf = fmt((r["fill"] + r["crate"]) / r["favor"])
-            lines.append(f"{i:>2}. {r['name']} ({favor} Favor)\n"
-                         f"    buy+fill {bf}/Favor | crate {fmt(r['crate'])} | "
-                         f"fill {fmt(r['fill'])} ({bundle_label(r['bundle'])})")
-        else:
-            lines.append(f"{i:>2}. {r['name']} ({favor} Favor)\n"
-                         f"    fill {fmt(r['fill'] / r['favor'])}/Favor | "
-                         f"fill {fmt(r['fill'])} ({bundle_label(r['bundle'])}) | crate price n/a")
+        lab = "buy+fill" if rank_v == "buy" else "fill"
+        lines.append(
+            f"{i:>2}. {r['name']} ({favor} Favor)\n"
+            f"    {lab}/Favor  MV {fmt(metric(r, 'm', rank_v))} | MB {fmt(metric(r, 'n', rank_v))}\n"
+            f"    crate       MV {fmt(r['crate']['m'])} | MB {fmt(r['crate']['n'])}\n"
+            f"    fill        MV {fmt(r['fill']['m'])} | MB {fmt(r['fill']['n'])}  "
+            f"({bundle_label(r['bundle'][basis])})")
 
+    base_label = "min buyout" if basis == "n" else "market value"
     title = (f"Waylaid Crates - {region_v.upper()} {type_v} {faction_v.capitalize()} "
-             f"({'buy + fill' if rank_v == 'buy' else 'fill only'} per Favor)")
-    embed = discord.Embed(title=title, description="```\n" + "\n".join(lines) + "\n```",
-                          colour=discord.Colour.gold())
-    embed.set_footer(text="* Artisan Favor unconfirmed | AH cut/deposit not included | "
+             f"(by {'buy + fill' if rank_v == 'buy' else 'fill only'}, {base_label})")
+    desc = "```\n" + "\n".join(lines) + "\n```"
+    if len(desc) > 4000:   # Discord embed description limit is 4096
+        desc = desc[:3990] + "\n...```"
+    embed = discord.Embed(title=title[:256], description=desc, colour=discord.Colour.gold())
+    embed.set_footer(text="MV = market value, MB = min buyout | * Artisan Favor unconfirmed | "
                           "Data: TradeSkillMaster (tradeskillmaster.com)")
     await interaction.followup.send(embed=embed)
 
@@ -156,20 +138,23 @@ async def mats(interaction: discord.Interaction,
     region_v = region.value if region else "eu"
     type_v = game_type.value if game_type else "normal"
     faction_v = faction.value if faction else "horde"
-    price_v = price.value if price else "market"
+    basis = "n" if (price and price.value == "min") else "m"
     try:
-        prices, _ = await get_prices(region_v, type_v, faction_v, price_v)
+        pm, pn, _ = await get_prices(region_v, type_v, faction_v)
     except Exception as e:  # noqa: BLE001
         await interaction.followup.send(f"Couldn't fetch TSM data: `{e}`")
         return
 
+    ref = pn if basis == "n" else pm
     mat_ids = {i for _, _, bs in CRATES.values() for b in bs for i, _ in b}
-    ranked = sorted((prices[i], i) for i in mat_ids if i in prices)[:top]
-    lines = [f"{ITEMS.get(i, i):<24} {fmt(p):>12}" for p, i in ranked]
+    ranked = sorted((i for i in mat_ids if i in ref), key=lambda i: ref[i])[:top]
+    lines = [f"{'':<24} {'MV':>11} {'MB':>11}"]
+    lines += [f"{ITEMS.get(i, i):<24} {fmt(pm.get(i)):>11} {fmt(pn.get(i)):>11}" for i in ranked]
     embed = discord.Embed(
-        title=f"Cheapest mats - {region_v.upper()} {type_v} {faction_v.capitalize()}",
+        title=f"Cheapest mats - {region_v.upper()} {type_v} {faction_v.capitalize()} "
+              f"(by {'min buyout' if basis == 'n' else 'market value'})",
         description="```\n" + "\n".join(lines) + "\n```", colour=discord.Colour.gold())
-    embed.set_footer(text="Data: TradeSkillMaster (tradeskillmaster.com)")
+    embed.set_footer(text="MV = market value, MB = min buyout | Data: TradeSkillMaster")
     await interaction.followup.send(embed=embed)
 
 
